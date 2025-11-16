@@ -36,10 +36,6 @@
     ]
   },
   "plugins": {
-    "dialog": {
-      "all": true,
-      "save": true
-    },
     "fs": {
       "all": true,
       "scope": [
@@ -54,4 +50,3 @@
 
   }
 }
-

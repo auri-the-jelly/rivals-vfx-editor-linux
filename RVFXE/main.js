@@ -1,4 +1,7 @@
 const { useState, useCallback, useMemo, useRef, useEffect } = React;
+const { open } = window.__TAURI__.dialog;
+const { join } = window.__TAURI__.path;
+const { invoke } = window.__TAURI__.core;
 
 // component that makes all the little star particles for the header
 const Particles = () => {
@@ -219,7 +222,7 @@ function App() {
 
     const [shuffleColors, setShuffleColors] = useState(['#ccffff', '#88eeee', '#66dddd']);
 
-    const directoryHandleRef = useRef(null);
+    const directoryPathRef = useRef(null);
 
     const [folders, setFolders] = useState([]);
     const [selectedFolders, setSelectedFolders] = useState(new Set());
@@ -269,7 +272,7 @@ function App() {
                 setFolders([]);
                 setSelectedFolders(new Set());
                 setSessionName('YourProjectName');
-                directoryHandleRef.current = null;
+                directoryPathRef.current = null;
                 setMasterColor('#ffffff');
                 setHueShiftValue(0);
                 setShuffleColors(['#ccffff', '#88eeee', '#66dddd']);
@@ -791,40 +794,37 @@ function App() {
         const filesToSave = new Set(Object.keys(modifiedFiles));
 
         try {
-            let dirHandle = directoryHandleRef.current;
-            // Asks for save path only one time
-            if (!dirHandle) {
-                dirHandle = await window.showDirectoryPicker();
-                directoryHandleRef.current = dirHandle;
-            }
-            const outputDirHandle = await dirHandle.getDirectoryHandle('output', { create: true });
-
-            for (const relativePath of filesToSave) {
-                const pathParts = relativePath.split('/');
-                const fileName = pathParts.pop(); // Gets file name
-                let currentDirHandle = outputDirHandle;
-
-                // Make every subfolder needed
-                for (const part of pathParts) {
-                    currentDirHandle = await currentDirHandle.getDirectoryHandle(part, { create: true });
+            let selectedPath = directoryPathRef.current;
+            // Ask for the destination path only once
+            if (!selectedPath) {
+                const dialogResult = await open({ directory: true });
+                if (!dialogResult) {
+                    setSaveStatus('Save cancelled.');
+                    return;
                 }
-
-                // Write new files to the right folder
-                const fileHandle = await currentDirHandle.getFileHandle(fileName, { create: true });
-                const writable = await fileHandle.createWritable();
-                await writable.write(JSON.stringify(modifiedFiles[relativePath], null, 2));
-                await writable.close();
+                selectedPath = Array.isArray(dialogResult) ? dialogResult[0] : dialogResult;
+                if (!selectedPath) {
+                    setSaveStatus('Save cancelled.');
+                    return;
+                }
+                directoryPathRef.current = selectedPath;
             }
+
+            const outputDirPath = await join(selectedPath, 'output');
+            const payload = [...filesToSave].map(relativePath => ({
+                relativePath,
+                contents: JSON.stringify(modifiedFiles[relativePath], null, 2),
+            }));
+            await invoke('write_files', {
+                baseDirectory: outputDirPath,
+                files: payload,
+            });
 
             setSaveStatus(`All ${filesToSave.size} files saved to 'output' folder!`);
 
         } catch (err) {
-            console.error("Error saving files:", err);
-            if (err.name !== 'AbortError') {
-                setSaveStatus(`Error: ${err.message}.`);
-            } else {
-                setSaveStatus('Save cancelled.');
-            }
+            const message = err instanceof Error ? err.message : String(err);
+            setSaveStatus(`Error: ${message}.`);
         }
 
         setTimeout(() => setSaveStatus(''), 10000);
@@ -848,29 +848,39 @@ function App() {
             }));
 
         const jsonString = JSON.stringify(sessionData, null, 2);
+        const safeSessionName = sessionName.trim() || 'project';
+        const fileName = safeSessionName.endsWith('.rvfxp') ? safeSessionName : `${safeSessionName}.rvfxp`;
 
         try {
-            const dirHandle = await window.showDirectoryPicker({
-                title: "Select a folder to save the session file"
+            const dialogResult = await open({
+                directory: true,
+                title: "Select a folder to save the session file",
             });
+            if (!dialogResult) {
+                return;
+            }
+            const dirPath = Array.isArray(dialogResult) ? dialogResult[0] : dialogResult;
+            if (!dirPath) {
+                return;
+            }
 
-            // Use the sessionName from state, and ensure it has a .json extension
-            const fileName = sessionName.endsWith('.rvfxp') ? sessionName : `${sessionName}.rvfxp`;
-
-            const fileHandle = await dirHandle.getFileHandle(fileName, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(jsonString);
-            await writable.close();
+            await invoke('write_files', {
+                baseDirectory: dirPath,
+                files: [{
+                    relativePath: fileName,
+                    contents: jsonString,
+                }],
+            });
             alert(`Project exported successfully as ${fileName}`);
 
         } catch (err) {
             console.error("Failed to export session:", err);
-            if (err.name !== 'AbortError') {
-                alert(`Failed to export session: ${err.message}`);
+            if (err && err.name !== 'AbortError') {
+                const message = err instanceof Error ? err.message : String(err);
+                alert(`Failed to export session: ${message}`);
             }
-        }
-    };
-
+        };
+    }
     const handleImportSession = () => {
         // This just clicks the hidden file input
         sessionFileInputRef.current.click();
